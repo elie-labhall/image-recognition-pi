@@ -4,7 +4,10 @@ import cv2
 from picamera2 import Picamera2
 import numpy as np
 
-CAM_WIDTH, CAM_HEIGHT = 320, 240
+import time
+
+
+CAM_WIDTH, CAM_HEIGHT = 1200, 900
 CONF_THRESHOLD = 0.5
 PERSON_CLASS_ID = 15
 
@@ -17,12 +20,21 @@ net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
 net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
 
 # Initialize camera
+# --- Camera setup ---
 picam2 = Picamera2()
-cfg = picam2.preview_configuration
-cfg.main.size = (CAM_WIDTH, CAM_HEIGHT)
-cfg.main.format = 'RGB888'
-picam2.configure("preview")
+
+video_cfg = picam2.create_video_configuration(
+    main={"size": (CAM_WIDTH, CAM_HEIGHT), "format": "RGB888"},
+    buffer_count=4
+)
+
+picam2.configure(video_cfg)  # first configure with your config object
+
+picam2.set_controls({"FrameRate": 60})  # then set controls separately
+
 picam2.start()
+
+
 
 # Flask setup
 app = Flask(__name__)
@@ -39,9 +51,15 @@ def index():
 
 def gen_frames():
     while True:
+
+        frame_start = time.perf_counter()  # Start timing the frame
+
         frame = picam2.capture_array()
         if frame is None:
             continue
+ 
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
         (h, w) = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
         net.setInput(blob)
@@ -63,6 +81,12 @@ def gen_frames():
 
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+        
+        # Measure frame processing time and calculate FPS
+        frame_time = time.perf_counter() - frame_start
+        fps = 1.0 / frame_time if frame_time > 0 else 0
+        print(f"Resolution: {CAM_WIDTH}x{CAM_HEIGHT}, FPS: {fps:.2f}")
+
 
 @app.route('/video_feed')
 def video_feed():
