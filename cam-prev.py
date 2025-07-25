@@ -4,7 +4,7 @@ import time
 from picamera2 import Picamera2
 
 # Configurable resolution and FPS
-CAM_WIDTH, CAM_HEIGHT = 320, 140
+CAM_WIDTH, CAM_HEIGHT = 4*320, 4*140
 TARGET_FPS = 40
 FRAME_DURATION = 1.0 / TARGET_FPS
 
