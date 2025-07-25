@@ -7,7 +7,7 @@ import numpy as np
 import time
 
 
-CAM_WIDTH, CAM_HEIGHT = 1200, 900
+CAM_WIDTH, CAM_HEIGHT = 300, 225
 CONF_THRESHOLD = 0.5
 PERSON_CLASS_ID = 15
 
@@ -25,12 +25,12 @@ picam2 = Picamera2()
 
 video_cfg = picam2.create_video_configuration(
     main={"size": (CAM_WIDTH, CAM_HEIGHT), "format": "RGB888"},
-    buffer_count=4
+    buffer_count=1
 )
 
 picam2.configure(video_cfg)  # first configure with your config object
 
-picam2.set_controls({"FrameRate": 60})  # then set controls separately
+# picam2.set_controls({"FrameRate": 60})  # then set controls separately
 
 picam2.start()
 
@@ -58,7 +58,7 @@ def gen_frames():
         if frame is None:
             continue
  
-        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        # frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         (h, w) = frame.shape[:2]
         blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
