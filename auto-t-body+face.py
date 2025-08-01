@@ -44,6 +44,16 @@ COUNTDOWN_SEC        = 3        # integer
 COUNTDOWN_LOST_TOL   = 0        # frames tolerated during countdown
 SHOT_DURATION        = 0.25
 ELIM_DISPLAY_SEC     = 1.0
+
+mode_dic = {
+    "burst": {"COUNTDOWN_SEC": 5, "SHOT_DURATION": 0.7},
+    "warning": {"COUNTDOWN_SEC": 3, "SHOT_DURATION": 0.25}
+}
+
+mode = "warning"
+COUNTOWN_SEC = mode_dic[mode]["COUNTDOWN_SEC"]
+SHOT_DURATION = mode_dic[mode]["SHOT_DURATION"]
+
 # ────────────────────────────────────────────────────────────────────────
 
 import math, time, cv2, numpy as np, board, busio, RPi.GPIO as GPIO
@@ -127,10 +137,10 @@ def gen_frames():
         best_face, best_fconf = None, 0.0
         for i in range(det_f.shape[2]):
             conf = float(det_f[0,0,i,2])
-            if conf < FACE_CONF: continue
+            if conf < FACE_CONF: continue       # face not fround
             x1,y1,x2,y2 = (det_f[0,0,i,3:7] *
                            np.array([CAM_W,CAM_H,CAM_W,CAM_H])).astype(int)
-            if (x2-x1)*(y2-y1) < MIN_FACE_PIX: continue
+            if (x2-x1)*(y2-y1) < MIN_FACE_PIX: continue    # face too small
             if conf > best_fconf:
                 best_face, best_fconf = (x1,y1,x2,y2), conf
 
