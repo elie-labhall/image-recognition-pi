@@ -51,7 +51,7 @@ mode_dic = {
 }
 
 mode = "warning"
-COUNTOWN_SEC = mode_dic[mode]["COUNTDOWN_SEC"]
+COUNTDOWN_SEC = mode_dic[mode]["COUNTDOWN_SEC"]
 SHOT_DURATION = mode_dic[mode]["SHOT_DURATION"]
 
 # ────────────────────────────────────────────────────────────────────────
