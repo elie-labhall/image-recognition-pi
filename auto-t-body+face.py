@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+""" 
 Pi pan-tilt tracker with face-priority & relay trigger
 
 • Tries face first (SSD-ResNet10); if lost >0.6 s ⇒ body (MobileNet-SSD)
