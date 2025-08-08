@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""" 
+"""
 Pi pan-tilt tracker with face-priority & relay trigger
 
 • Tries face first (SSD-ResNet10); if lost >0.6 s ⇒ body (MobileNet-SSD)
@@ -7,6 +7,9 @@ Pi pan-tilt tracker with face-priority & relay trigger
 • During countdown/eliminated: tolerate 2 empty frames before cancel
 • Live MJPEG stream:  http://<pi-ip>:5000/
 """
+
+
+
 
 # ─── CONFIG ─────────────────────────────────────────────────────────────
 PAN_CH, TILT_CH         = 0, 1
@@ -50,9 +53,9 @@ mode_dic = {
     "warning": {"COUNTDOWN_SEC": 3, "SHOT_DURATION": 0.25}
 }
 
-mode = "warning"
-COUNTDOWN_SEC = mode_dic[mode]["COUNTDOWN_SEC"]
-SHOT_DURATION = mode_dic[mode]["SHOT_DURATION"]
+current_mode = "burst"
+COUNTDOWN_SEC = mode_dic[current_mode]["COUNTDOWN_SEC"]
+SHOT_DURATION = mode_dic[current_mode]["SHOT_DURATION"]
 
 # ────────────────────────────────────────────────────────────────────────
 
@@ -60,7 +63,8 @@ import math, time, cv2, numpy as np, board, busio, RPi.GPIO as GPIO
 from pathlib import Path
 from picamera2 import Picamera2
 from adafruit_pca9685 import PCA9685
-from flask import Flask, Response, render_template_string
+from flask import Flask, Response, render_template_string, request, jsonify
+
 
 # ─── Servo setup ───────────────────────────────────────────────────────
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -96,6 +100,20 @@ def trigger_shot():
     time.sleep(SHOT_DURATION)
     GPIO.output(RELAY_PIN, GPIO.LOW)
 
+firing = False               # is relay currently on?
+control_trigger_active = False  # only meaningful in control mode
+
+def relay_on():
+    global firing
+    GPIO.output(RELAY_PIN, GPIO.HIGH)
+    firing = True
+
+def relay_off():
+    global firing
+    GPIO.output(RELAY_PIN, GPIO.LOW)
+    firing = False
+
+
 # ─── Flask UI ──────────────────────────────────────────────────────────
 app = Flask(__name__)
 HTML = """<!doctype html><html><head><title>Pi Tracker</title></head>
@@ -103,6 +121,62 @@ HTML = """<!doctype html><html><head><title>Pi Tracker</title></head>
 <img src="{{ url_for('video_feed') }}" style="width:100vw;height:100vh;object-fit:contain;"></body></html>"""
 @app.route("/")
 def index(): return render_template_string(HTML)
+
+@app.route("/api/ping")
+def api_ping():
+    return jsonify(ok=True)
+
+@app.route("/api/status")
+def api_status():
+    return jsonify(
+        mode=current_mode,
+        firing=firing,
+        last_conf=last_conf,
+        tracking_mode=("face" if (time.time() - last_face_time) < FACE_HOLD_SEC and last_face_box else "body/none")
+    )
+
+@app.route("/api/mode", methods=["POST"])
+def api_mode():
+    global current_mode, COUNTDOWN_SEC, SHOT_DURATION, control_trigger_active
+    data = request.get_json(force=True) or {}
+    m = str(data.get("mode", "")).lower()
+    if m not in ("burst", "warning", "control"):
+        return jsonify(ok=False, error="invalid mode"), 400
+
+    current_mode = m
+    if m in ("burst", "warning"):
+        # load timing from table
+        COUNTDOWN_SEC = mode_dic[m]["COUNTDOWN_SEC"]
+        SHOT_DURATION = mode_dic[m]["SHOT_DURATION"]
+        # ensure not stuck firing
+        control_trigger_active = False
+        relay_off()
+    else:
+        # control mode: no countdown logic, manual trigger only
+        control_trigger_active = False
+        relay_off()
+
+    return jsonify(ok=True, mode=current_mode, COUNTDOWN_SEC=COUNTDOWN_SEC if m!="control" else None, SHOT_DURATION=SHOT_DURATION if m!="control" else None)
+
+@app.route("/api/trigger", methods=["POST"])
+def api_trigger():
+    # Only meaningful in control mode; no-op otherwise
+    global control_trigger_active
+    data = request.get_json(force=True) or {}
+    action = str(data.get("action", "")).lower()
+    if current_mode != "control":
+        return jsonify(ok=False, error="trigger only in 'control' mode"), 400
+    if action == "down":
+        control_trigger_active = True
+        relay_on()
+        return jsonify(ok=True, firing=True)
+    elif action in ("up", "cancel"):
+        control_trigger_active = False
+        relay_off()
+        return jsonify(ok=True, firing=False)
+    else:
+        return jsonify(ok=False, error="action must be 'down' or 'up'"), 400
+
 
 # ─── Runtime state ─────────────────────────────────────────────────────
 scan_dir = 1
@@ -115,6 +189,8 @@ countdown_start, shot_time = None, None
 lost_frames = 0
 
 last_conf, last_fx, last_fy = 0.0, CX, CY
+
+
 
 # ─── Stream generator ──────────────────────────────────────────────────
 def gen_frames():
@@ -137,7 +213,7 @@ def gen_frames():
         best_face, best_fconf = None, 0.0
         for i in range(det_f.shape[2]):
             conf = float(det_f[0,0,i,2])
-            if conf < FACE_CONF: continue       # face not fround
+            if conf < FACE_CONF: continue       # face not found
             x1,y1,x2,y2 = (det_f[0,0,i,3:7] *
                            np.array([CAM_W,CAM_H,CAM_W,CAM_H])).astype(int)
             if (x2-x1)*(y2-y1) < MIN_FACE_PIX: continue    # face too small
@@ -201,18 +277,28 @@ def gen_frames():
                 set_angle(PAN_CH,pan); set_angle(TILT_CH,tilt)
                 time.sleep(SCAN_DELAY)
 
-        # ---- Countdown / shot FSM with frame tolerance ---------------
-        target_ok = detected or lost_frames <= COUNTDOWN_LOST_TOL
-        if target_ok:
-            if shot_time:
-                if time.time()-shot_time >= ELIM_DISPLAY_SEC:
-                    shot_time=None; countdown_start=time.time()
-            elif countdown_start is None:
-                countdown_start = time.time()
-            elif time.time()-countdown_start >= COUNTDOWN_SEC:
-                trigger_shot(); shot_time=time.time(); countdown_start=None
+        # ---- Mode-based firing ---------------------------------------
+        if current_mode == "control":
+            # In control mode we ignore countdown logic.
+            # Firing is handled by /api/trigger which calls relay_on/off.
+            # Ensure relay is off if not pressed.
+            if not control_trigger_active and firing:
+                relay_off()
+            # overlay handled below
         else:
-            countdown_start, shot_time = None, None
+            # Burst/Warning: original countdown logic
+            target_ok = detected or lost_frames <= COUNTDOWN_LOST_TOL
+            if target_ok:
+                if shot_time:
+                    if time.time()-shot_time >= ELIM_DISPLAY_SEC:
+                        shot_time=None; countdown_start=time.time()
+                elif countdown_start is None:
+                    countdown_start = time.time()
+                elif time.time()-countdown_start >= COUNTDOWN_SEC:
+                    trigger_shot(); shot_time=time.time(); countdown_start=None
+            else:
+                countdown_start, shot_time = None, None
+
 
         # ---- Overlay text --------------------------------------------
         fps = 1.0 / (time.perf_counter()-t0)
@@ -226,13 +312,17 @@ def gen_frames():
                     cv2.FONT_HERSHEY_SIMPLEX,0.5,(255,255,0),1)
         print(f"Tracking mode: {tracking_mode}, ")
 
-        if shot_time:
-            overlay="Target Eliminated"
-        elif countdown_start:
-            remaining=COUNTDOWN_SEC-int(time.time()-countdown_start)
-            overlay=str(max(1,remaining))
+        if current_mode == "control":
+            overlay = "FIRING" if firing else "Control mode"
         else:
-            overlay="Searching for target"
+            if shot_time:
+                overlay = "Target Eliminated"
+            elif countdown_start:
+                remaining = COUNTDOWN_SEC - int(time.time() - countdown_start)
+                overlay = str(max(1, remaining))
+            else:
+                overlay = "Searching for target"
+
         cv2.putText(frame,overlay,(5,95),
                     cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,255),2)
 
@@ -247,6 +337,8 @@ def gen_frames():
         ret,jpeg=cv2.imencode(".jpg",frame)
         if not ret: continue
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"+jpeg.tobytes()+b"\r\n")
+
+
 
 @app.route("/video_feed")
 def video_feed():
